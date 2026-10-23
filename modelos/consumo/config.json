@@ -1,0 +1,23 @@
+{
+  "versao": "1.1",
+  "familia": "consumo",
+  "tamanho_imagem": 224,
+  "limite_confianca": 0.6,
+  "limite_distancia": 1.0414,
+  "k_vizinhos": 3,
+  "classes_modelo": [
+    "descartavel",
+    "reutilizavel"
+  ],
+  "classes_validas": [
+    "reutilizavel"
+  ],
+  "classe_negativa": "descartavel",
+  "motivo_negativa": "DESCARTAVEL",
+  "metricas_validacao": {
+    "validas_aprovadas": 0.913,
+    "fraudes_barradas": 0.9821,
+    "fotos_treino": 54,
+    "fotos_invalidas_calibracao": 25
+  }
+}
