@@ -1,0 +1,23 @@
+{
+  "versao": "1.0",
+  "tamanho_imagem": 224,
+  "limite_confianca": 0.5,
+  "limite_distancia": 0.9261,
+  "k_vizinhos": 3,
+  "classes_modelo": [
+    "bicicleta",
+    "carro_particular",
+    "transporte_publico"
+  ],
+  "classes_validas": [
+    "bicicleta",
+    "transporte_publico"
+  ],
+  "classe_negativa": "carro_particular",
+  "metricas_validacao": {
+    "validas_aprovadas": 0.9483,
+    "fraudes_barradas": 1.0,
+    "fotos_treino": 87,
+    "fotos_invalidas_calibracao": 24
+  }
+}
