@@ -76,6 +76,9 @@ def test_prompt_fala_da_missao():
     assert "Transporte Público" in texto
     assert "APPROVED" in texto
     assert "REJECTED" in texto
+    assert "computador" in texto.lower()
+    assert "print" in texto.lower()
+    assert "celular" not in texto.lower() or "não foi tirada no celular" in texto.lower()
 
 
 def test_e_heic_reconhece_ftyp():
