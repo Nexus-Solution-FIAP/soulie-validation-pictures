@@ -1,0 +1,23 @@
+{
+  "versao": "1.1",
+  "familia": "energia",
+  "tamanho_imagem": 224,
+  "limite_confianca": 0.5,
+  "limite_distancia": 1.0886,
+  "k_vizinhos": 3,
+  "classes_modelo": [
+    "aparelho",
+    "outro"
+  ],
+  "classes_validas": [
+    "aparelho"
+  ],
+  "classe_negativa": "outro",
+  "motivo_negativa": "CENA_INVALIDA",
+  "metricas_validacao": {
+    "validas_aprovadas": 0.92,
+    "fraudes_barradas": 0.8551,
+    "fotos_treino": 69,
+    "fotos_invalidas_calibracao": 25
+  }
+}

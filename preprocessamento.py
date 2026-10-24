@@ -134,7 +134,8 @@ def decidir(probs: np.ndarray, classes: list[str], distancia: float, config: dic
     }
 
     if classe == config["classe_negativa"]:
-        return {"status": "REPROVADO", **base, "motivo": "CARRO_PARTICULAR"}
+        motivo = config.get("motivo_negativa", "CARRO_PARTICULAR")
+        return {"status": "REPROVADO", **base, "motivo": motivo}
     if distancia > config["limite_distancia"]:
         return {"status": "REPROVADO", **base, "motivo": "CENA_INVALIDA"}
     if confianca < config["limite_confianca"]:
