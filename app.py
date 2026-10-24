@@ -19,11 +19,9 @@ import httpx
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from PIL import UnidentifiedImageError
 
-import inferencia
-import preprocessamento as pp
+import visao_llm
 from contrato import AnalisarRequest, AnalisarResponse
 from familias import FAMILIAS, hint, resolver_familia
-from resposta import para_contrato
 
 log = logging.getLogger("uvicorn.error")
 
@@ -33,6 +31,8 @@ _trava_inferencia = threading.Lock()
 
 
 def _preparar_em_fundo() -> None:
+    import inferencia
+
     inicio = time.perf_counter()
     try:
         inferencia.preparar_extrator()
@@ -43,20 +43,24 @@ def _preparar_em_fundo() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Não carrega TensorFlow aqui: no Render o bind tem de acontecer já,
-    # senão o Java estoura o connect timeout de 5s enquanto a MobileNet sobe
-    # e o POST /v1/analisar nunca aparece no log.
-    threading.Thread(
-        target=_preparar_em_fundo,
-        daemon=True,
-        name="carregar-modelos",
-    ).start()
+    # Não carrega TensorFlow no bind: no Render 512 MB isso estoura a RAM.
+    # Com GEMINI_API_KEY o processo fica leve; TF só sobe se a flag pedir.
+    if visao_llm.carregar_tensorflow_no_startup():
+        threading.Thread(
+            target=_preparar_em_fundo,
+            daemon=True,
+            name="carregar-modelos",
+        ).start()
+    elif visao_llm.configurado():
+        log.info("Visão via Gemini (%s). TensorFlow não será carregado.", visao_llm.modelo())
+    else:
+        log.warning("Sem GEMINI_API_KEY e sem TensorFlow: POST /v1/analisar devolve 503.")
     yield
 
 
 app = FastAPI(
     title="Soulie - Validação de Fotos",
-    version="1.1",
+    version="1.2",
     description="Valida a foto de evidência de uma missão. O Java chama POST /v1/analisar.",
     lifespan=lifespan,
 )
@@ -74,6 +78,8 @@ def _conferir_chave(authorization: str | None) -> None:
 
 
 def _abrir(conteudo: bytes):
+    import preprocessamento as pp
+
     if not conteudo:
         raise HTTPException(status_code=400, detail="Arquivo vazio.")
     if len(conteudo) > TAMANHO_MAXIMO_BYTES:
@@ -115,7 +121,10 @@ def _bytes_da_requisicao(pedido: AnalisarRequest) -> bytes:
     raise HTTPException(status_code=400, detail="Envie imageUrl ou imageBase64.")
 
 
-def _analisar(img, mission: dict | None) -> AnalisarResponse:
+def _via_tensorflow(img, mission: dict | None) -> AnalisarResponse:
+    import inferencia
+    from resposta import para_contrato
+
     try:
         inferencia.aguardar_pronto()
     except inferencia.ModelosNaoProntos as exc:
@@ -135,15 +144,65 @@ def _analisar(img, mission: dict | None) -> AnalisarResponse:
     return AnalisarResponse(**corpo)
 
 
+def _analisar(img, bruto: bytes, mission: dict | None, content_type: str | None) -> AnalisarResponse:
+    familia = resolver_familia(mission)
+    usar_gemini = visao_llm.configurado() and os.getenv("SOULIE_VISION_BACKEND", "auto").strip().lower() != "tensorflow"
+
+    if usar_gemini:
+        try:
+            corpo = visao_llm.analisar_com_gemini(img, bruto, mission, content_type)
+            if img is not None:
+                corpo["hash_imagem"] = str(imagehash.phash(img))
+            log.info(
+                "Analisou familia=%s origem=%s status=%s",
+                corpo.get("familia") or familia,
+                corpo.get("origem"),
+                corpo.get("status"),
+            )
+            return AnalisarResponse(**corpo)
+        except visao_llm.LlmIndisponivel as exc:
+            log.warning("Gemini indisponível (%s); tentando reserva local.", exc)
+            if img is None or not visao_llm.carregar_tensorflow_no_startup():
+                raise HTTPException(
+                    status_code=503,
+                    detail="A análise por visão está temporariamente indisponível.",
+                ) from exc
+
+    if img is None:
+        raise HTTPException(status_code=400, detail="O arquivo enviado não é uma imagem válida.")
+    return _via_tensorflow(img, mission)
+
+
 @app.get("/health")
 def health():
+    tf_no_ar = visao_llm.carregar_tensorflow_no_startup()
+    tf_pronto = False
+    tf_erro = None
+    treinados: list[str] = []
+    if tf_no_ar:
+        import inferencia
+
+        tf_pronto = inferencia.modelos_prontos()
+        tf_erro = inferencia.erro_preparo()
+        treinados = inferencia.familias_com_modelo()
+
+    gemini_ok = visao_llm.configurado()
+    ready = gemini_ok or tf_pronto
+    backend = "gemini" if gemini_ok and os.getenv("SOULIE_VISION_BACKEND", "auto").strip().lower() != "tensorflow" else (
+        "tensorflow" if tf_no_ar else "nenhum"
+    )
     return {
         "status": "ok",
-        "ready": inferencia.modelos_prontos(),
+        "ready": ready,
+        "backend": backend,
+        "gemini": gemini_ok,
+        "gemini_model": visao_llm.modelo() if gemini_ok else None,
+        "tensorflow": tf_no_ar,
+        "tensorflow_ready": tf_pronto,
         "familias": list(FAMILIAS),
-        "modelos_treinados": inferencia.familias_com_modelo(),
+        "modelos_treinados": treinados,
         "hint_por_familia": {nome: hint(nome) for nome in FAMILIAS},
-        "erro_preparo": inferencia.erro_preparo(),
+        "erro_preparo": tf_erro,
     }
 
 
@@ -160,9 +219,18 @@ def analisar(
         bool(pedido.image_base64),
     )
     _conferir_chave(authorization)
-    img = _abrir(_bytes_da_requisicao(pedido))
+    bruto = _bytes_da_requisicao(pedido)
+    if len(bruto) > TAMANHO_MAXIMO_BYTES:
+        raise HTTPException(status_code=413, detail="Foto maior que 10 MB.")
+    img = None
+    try:
+        img = _abrir(bruto)
+    except HTTPException:
+        if not (visao_llm.configurado() and visao_llm.e_heic(bruto)):
+            raise
+        log.info("Foto HEIC encaminhada ao Gemini sem decode local.")
     mission = pedido.mission.model_dump() if pedido.mission else None
-    return _analisar(img, mission)
+    return _analisar(img, bruto, mission, pedido.content_type)
 
 
 @app.post("/validar", response_model=AnalisarResponse)
@@ -172,8 +240,9 @@ def validar(
 ):
     """Atalho manual (multipart). Sem missão, assume a família mobilidade."""
     _conferir_chave(authorization)
-    img = _abrir(foto.file.read())
-    return _analisar(img, {"tag": "Mobilidade", "name": "Transporte Público"})
+    bruto = foto.file.read()
+    img = _abrir(bruto)
+    return _analisar(img, bruto, {"tag": "Mobilidade", "name": "Transporte Público"}, foto.content_type)
 
 
 @app.get("/v1/familias/{tag}")
@@ -187,4 +256,6 @@ def familia_da_tag(tag: str, name: str = ""):
 
 
 def pasta_existe(familia: str) -> bool:
-    return inferencia.pasta_modelo(familia) is not None
+    from inferencia import pasta_modelo
+
+    return pasta_modelo(familia) is not None

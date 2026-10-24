@@ -12,7 +12,6 @@ import logging
 import threading
 from pathlib import Path
 
-import joblib
 import numpy as np
 from PIL import Image
 
@@ -56,6 +55,8 @@ def carregar_familia(familia: str) -> dict | None:
     pasta = pasta_modelo(familia)
     if pasta is None:
         return None
+    import joblib
+
     dados = {
         "classificador": joblib.load(pasta / "classificador.joblib"),
         "detector": joblib.load(pasta / "detector_anomalia.joblib"),
