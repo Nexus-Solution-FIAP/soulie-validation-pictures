@@ -8,6 +8,7 @@ rotulador ImageNet da MobileNetV2 — um paliativo até haver fotos de treino.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from PIL import Image
 import preprocessamento as pp
 from familias import FAMILIAS, resolver_familia
 
+log = logging.getLogger("uvicorn.error")
+
 PASTA_MODELOS = Path(__file__).parent / "modelos"
 LIMITE_IMAGENET_VALIDA = 0.18
 LIMITE_IMAGENET_CENA = 0.12
@@ -26,6 +29,12 @@ LIMITE_IMAGENET_NEGATIVA = 0.15
 _trava = threading.Lock()
 _familias_carregadas: dict[str, dict] = {}
 _rotulador = None
+_pronto = threading.Event()
+_erro_preparo: str | None = None
+
+
+class ModelosNaoProntos(Exception):
+    """TensorFlow ainda carregando, ou o startup falhou."""
 
 
 def pasta_modelo(familia: str) -> Path | None:
@@ -70,10 +79,41 @@ def carregar_rotulador():
     return _rotulador
 
 
+def preparo_terminou() -> bool:
+    return _pronto.is_set()
+
+
+def modelos_prontos() -> bool:
+    return _pronto.is_set() and _erro_preparo is None
+
+
+def erro_preparo() -> str | None:
+    return _erro_preparo
+
+
+def aguardar_pronto(timeout: float = 60.0) -> None:
+    """Bloqueia até o extrator estar em memória. 503 se estourar o teto."""
+    if not _pronto.wait(timeout):
+        raise ModelosNaoProntos("Modelos ainda carregando.")
+    if _erro_preparo:
+        raise ModelosNaoProntos(_erro_preparo)
+
+
 def preparar_extrator() -> None:
-    pp.carregar_extrator()
-    for familia in FAMILIAS:
-        carregar_familia(familia)
+    """Carrega MobileNet + joblibs. Seguro chamar mais de uma vez."""
+    global _erro_preparo
+    try:
+        pp.carregar_extrator()
+        for familia in FAMILIAS:
+            carregar_familia(familia)
+        _erro_preparo = None
+        log.info("Extrator pronto. Famílias com modelo: %s", familias_com_modelo())
+    except Exception as exc:
+        _erro_preparo = str(exc)
+        log.exception("Falha ao carregar o extrator")
+        raise
+    finally:
+        _pronto.set()
 
 
 def _nome_imagenet(nome: str) -> str:
